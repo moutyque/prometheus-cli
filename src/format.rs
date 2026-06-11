@@ -1,15 +1,26 @@
-use crate::client::QueryData;
+use crate::client::{QueryData, QueryResult};
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 
-/* With a limit, only the first N series are printed, followed by a "[N of M series]"
-   trailer ("(empty result)" when there are none) — a machine-checkable summary that
-   keeps output bounded when a query returns thousands of series. */
+/* With a limit, only the N LARGEST series (by value; last sample for ranges) are
+   printed, followed by a "[N of M series]" trailer ("(empty result)" when there are
+   none) — a bounded, deterministic summary when a query returns thousands of series.
+   Truncating in server order would drop an arbitrary subset. Without --limit, server
+   order is preserved. */
 pub fn format_query_result_limited(data: &QueryData, human_readable: bool, limit: Option<usize>) {
     let total = data.result.len();
     let shown = limit.map(|l| l.min(total)).unwrap_or(total);
 
-    for result in data.result.iter().take(shown) {
+    let mut results: Vec<&QueryResult> = data.result.iter().collect();
+    if limit.is_some() {
+        results.sort_by(|a, b| {
+            sample_value(b)
+                .partial_cmp(&sample_value(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    for result in results.into_iter().take(shown) {
         format_metric_header(&result.metric, human_readable);
 
         if let Some((ts, val)) = &result.value {
@@ -30,6 +41,15 @@ pub fn format_query_result_limited(data: &QueryData, human_readable: bool, limit
             println!("[{} of {} series]", shown, total);
         }
     }
+}
+
+fn sample_value(r: &QueryResult) -> f64 {
+    r.value
+        .as_ref()
+        .map(|(_, v)| v)
+        .or_else(|| r.values.as_ref().and_then(|vs| vs.last()).map(|(_, v)| v))
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(f64::NEG_INFINITY)
 }
 
 fn format_metric_header(metric: &serde_json::Value, human_readable: bool) {
