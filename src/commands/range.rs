@@ -1,5 +1,5 @@
 use crate::client::PrometheusClient;
-use crate::format::format_query_result;
+use crate::format::format_query_result_limited;
 use anyhow::Result;
 use chrono::Utc;
 
@@ -10,16 +10,17 @@ pub fn run(
     end: &str,
     step: &str,
     human_readable: bool,
+    limit: Option<usize>,
 ) -> Result<()> {
     let start_ts = parse_time(start)?;
     let end_ts = parse_time(end)?;
 
     let data = client.query_range(promql, &start_ts, &end_ts, step)?;
-    format_query_result(&data, human_readable);
+    format_query_result_limited(&data, human_readable, limit);
     Ok(())
 }
 
-fn parse_time(input: &str) -> Result<String> {
+pub fn parse_time(input: &str) -> Result<String> {
     if input == "now" {
         return Ok(Utc::now().timestamp().to_string());
     }

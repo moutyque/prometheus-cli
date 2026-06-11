@@ -14,6 +14,14 @@ struct Cli {
     #[arg(short = 'H', long, global = true)]
     human: bool,
 
+    /// HTTP timeout in seconds (historical/cold-block queries can need 60s+)
+    #[arg(long, global = true, default_value_t = 30)]
+    timeout: u64,
+
+    /// Print at most N series, then a "[N of M series]" trailer (unbounded without it)
+    #[arg(long, global = true)]
+    limit: Option<usize>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -24,6 +32,9 @@ enum Commands {
     Query {
         /// PromQL query string
         promql: String,
+        /// Evaluate at this time instead of now (e.g., "1h", "2024-01-01T00:00:00Z", Unix timestamp)
+        #[arg(long)]
+        at: Option<String>,
     },
     /// Execute a range PromQL query
     Range {
@@ -45,11 +56,11 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = PrometheusClient::new()?;
+    let client = PrometheusClient::new(cli.timeout)?;
 
     match cli.command {
-        Commands::Query { promql } => {
-            commands::query::run(&client, &promql, cli.human)?;
+        Commands::Query { promql, at } => {
+            commands::query::run(&client, &promql, at.as_deref(), cli.human, cli.limit)?;
         }
         Commands::Range {
             promql,
@@ -57,7 +68,7 @@ fn main() -> Result<()> {
             end,
             step,
         } => {
-            commands::range::run(&client, &promql, &start, &end, &step, cli.human)?;
+            commands::range::run(&client, &promql, &start, &end, &step, cli.human, cli.limit)?;
         }
         Commands::Metrics => {
             commands::metrics::run(&client)?;

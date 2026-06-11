@@ -2,8 +2,14 @@ use crate::client::QueryData;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 
-pub fn format_query_result(data: &QueryData, human_readable: bool) {
-    for result in &data.result {
+/* With a limit, only the first N series are printed, followed by a "[N of M series]"
+   trailer ("(empty result)" when there are none) — a machine-checkable summary that
+   keeps output bounded when a query returns thousands of series. */
+pub fn format_query_result_limited(data: &QueryData, human_readable: bool, limit: Option<usize>) {
+    let total = data.result.len();
+    let shown = limit.map(|l| l.min(total)).unwrap_or(total);
+
+    for result in data.result.iter().take(shown) {
         format_metric_header(&result.metric, human_readable);
 
         if let Some((ts, val)) = &result.value {
@@ -14,6 +20,14 @@ pub fn format_query_result(data: &QueryData, human_readable: bool) {
             for (ts, val) in values {
                 format_value(*ts, val, human_readable);
             }
+        }
+    }
+
+    if limit.is_some() {
+        if total == 0 {
+            println!("(empty result)");
+        } else {
+            println!("[{} of {} series]", shown, total);
         }
     }
 }

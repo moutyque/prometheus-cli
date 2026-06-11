@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::env;
+use std::time::Duration;
 
 #[derive(Deserialize, Debug)]
 pub struct PrometheusResponse<T> {
@@ -38,14 +39,19 @@ pub struct PrometheusClient {
 }
 
 impl PrometheusClient {
-    pub fn new() -> Result<Self> {
+    pub fn new(timeout_secs: u64) -> Result<Self> {
         let base_url = env::var("PROMETHEUS_URL")
             .context("PROMETHEUS_URL environment variable not set")?;
         let user = env::var("PROMETHEUS_USER").ok();
         let password = env::var("PROMETHEUS_PASSWORD").ok();
 
+        let client = Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build()
+            .context("Failed to build HTTP client")?;
+
         Ok(Self {
-            client: Client::new(),
+            client,
             base_url,
             user,
             password,
@@ -61,10 +67,14 @@ impl PrometheusClient {
         req
     }
 
-    pub fn query(&self, promql: &str) -> Result<QueryData> {
+    pub fn query(&self, promql: &str, at: Option<&str>) -> Result<QueryData> {
+        let mut params = vec![("query", promql)];
+        if let Some(time) = at {
+            params.push(("time", time));
+        }
         let resp: PrometheusResponse<QueryData> = self
             .request("/api/v1/query")
-            .query(&[("query", promql)])
+            .query(&params)
             .send()
             .context("Failed to send request")?
             .json()
