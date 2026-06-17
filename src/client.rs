@@ -1,8 +1,21 @@
 use anyhow::{Context, Result};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::env;
 use std::time::Duration;
+
+/// Trim a response body for inclusion in an error message — backend error pages can be
+/// large, and the first line carries the signal.
+fn snippet(body: &str) -> String {
+    let body = body.trim();
+    const MAX: usize = 300;
+    if body.len() <= MAX {
+        body.to_string()
+    } else {
+        format!("{}… ({} bytes)", &body[..MAX], body.len())
+    }
+}
 
 #[derive(Deserialize, Debug)]
 pub struct PrometheusResponse<T> {
@@ -58,7 +71,7 @@ impl PrometheusClient {
         })
     }
 
-    fn request(&self, path: &str) -> reqwest::blocking::RequestBuilder {
+    fn request(&self, path: &str) -> RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
         let mut req = self.client.get(&url);
         if let (Some(user), Some(pass)) = (&self.user, &self.password) {
@@ -67,18 +80,34 @@ impl PrometheusClient {
         req
     }
 
+    /// Send the request and parse the Prometheus envelope. Reads the body as text first so a
+    /// non-2xx response (e.g. the OVH promql-api returns HTTP 500 = aggregator OOM on a
+    /// high-cardinality / `offset` query, or HTTP 422 = the 30 MB estimated-memory cap) is
+    /// reported as a backend error with its code and body — not masked as a misleading
+    /// "missing field `status`" JSON-parse failure from blindly deserializing the error page.
+    fn fetch<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<PrometheusResponse<T>> {
+        let resp = req.send().context("Failed to send request")?;
+        let status = resp.status();
+        let body = resp.text().context("Failed to read response body")?;
+        if !status.is_success() {
+            anyhow::bail!("backend returned HTTP {}: {}", status.as_u16(), snippet(&body));
+        }
+        serde_json::from_str(&body).with_context(|| {
+            format!(
+                "Failed to parse response (HTTP {}): {}",
+                status.as_u16(),
+                snippet(&body)
+            )
+        })
+    }
+
     pub fn query(&self, promql: &str, at: Option<&str>) -> Result<QueryData> {
         let mut params = vec![("query", promql)];
         if let Some(time) = at {
             params.push(("time", time));
         }
-        let resp: PrometheusResponse<QueryData> = self
-            .request("/api/v1/query")
-            .query(&params)
-            .send()
-            .context("Failed to send request")?
-            .json()
-            .context("Failed to parse response")?;
+        let resp: PrometheusResponse<QueryData> =
+            self.fetch(self.request("/api/v1/query").query(&params))?;
 
         if resp.status != "success" {
             anyhow::bail!(
@@ -98,13 +127,10 @@ impl PrometheusClient {
         end: &str,
         step: &str,
     ) -> Result<QueryData> {
-        let resp: PrometheusResponse<QueryData> = self
-            .request("/api/v1/query_range")
-            .query(&[("query", promql), ("start", start), ("end", end), ("step", step)])
-            .send()
-            .context("Failed to send request")?
-            .json()
-            .context("Failed to parse response")?;
+        let resp: PrometheusResponse<QueryData> = self.fetch(
+            self.request("/api/v1/query_range")
+                .query(&[("query", promql), ("start", start), ("end", end), ("step", step)]),
+        )?;
 
         if resp.status != "success" {
             anyhow::bail!(
@@ -118,12 +144,8 @@ impl PrometheusClient {
     }
 
     pub fn list_metrics(&self) -> Result<Vec<String>> {
-        let resp: PrometheusResponse<Vec<String>> = self
-            .request("/api/v1/label/__name__/values")
-            .send()
-            .context("Failed to send request")?
-            .json()
-            .context("Failed to parse response")?;
+        let resp: PrometheusResponse<Vec<String>> =
+            self.fetch(self.request("/api/v1/label/__name__/values"))?;
 
         if resp.status != "success" {
             anyhow::bail!(
